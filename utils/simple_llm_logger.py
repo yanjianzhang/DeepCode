@@ -167,6 +167,23 @@ class SimpleLLMLogger:
         preview = content[:80] + "..." if len(content) > 80 else content
         print(f"🤖 {model} ({agent}): {preview}")
 
+    # Standard logging methods for compatibility
+    def info(self, message: str):
+        """Log info level message"""
+        print(f"ℹ️ {message}")
+
+    def warning(self, message: str):
+        """Log warning level message"""
+        print(f"⚠️ {message}")
+
+    def error(self, message: str):
+        """Log error level message"""
+        print(f"❌ {message}")
+
+    def debug(self, message: str):
+        """Log debug level message"""
+        print(f"🔍 {message}")
+
 
 # 全局实例
 _global_logger = None

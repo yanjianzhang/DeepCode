@@ -527,6 +527,39 @@ Requirements:
 
         # Define provider initialization functions
         async def init_anthropic():
+            # Check for Bedrock configuration first
+            aws_access_key = os.environ.get("AWS_ACCESS_KEY") or os.environ.get("AWS_ACCESS_KEY_ID", "")
+            aws_secret_key = os.environ.get("AWS_SECRET_KEY") or os.environ.get("AWS_SECRET_ACCESS_KEY", "")
+            aws_region = os.environ.get("AWS_REGION", "")
+            bedrock_model_arn = os.environ.get("ANTHROPIC_BEDROCK_MODEL_ARN", "")
+
+            # Try Bedrock if AWS credentials and model ARN are available
+            if aws_access_key and aws_secret_key and aws_region and bedrock_model_arn:
+                try:
+                    from anthropic import AsyncAnthropicBedrock
+
+                    client = AsyncAnthropicBedrock(
+                        aws_access_key=aws_access_key,
+                        aws_secret_key=aws_secret_key,
+                        aws_region=aws_region,
+                    )
+                    await client.messages.create(
+                        model=bedrock_model_arn,
+                        max_tokens=20,
+                        messages=[{"role": "user", "content": "test"}],
+                    )
+                    self.logger.info(
+                        f"Using Anthropic Bedrock API with model ARN: {bedrock_model_arn}"
+                    )
+                    # Override the default model to use the Bedrock ARN
+                    self.default_models["anthropic"] = bedrock_model_arn
+                    self.default_models["anthropic_implementation"] = bedrock_model_arn
+                    self.default_models["anthropic_planning"] = bedrock_model_arn
+                    return client, "anthropic"
+                except Exception as e:
+                    self.logger.warning(f"Anthropic Bedrock API unavailable: {e}")
+
+            # Fall back to standard Anthropic API
             if not (anthropic_key and anthropic_key.strip()):
                 return None
             try:

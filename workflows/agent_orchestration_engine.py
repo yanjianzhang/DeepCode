@@ -58,6 +58,7 @@ from utils.llm_utils import (
     get_adaptive_prompts,
     get_token_limits,
 )
+from utils.bedrock_llm import is_bedrock_configured
 from workflows.agents.document_segmentation_agent import prepare_document_segments
 from workflows.agents.requirement_analysis_agent import RequirementAnalysisAgent
 
@@ -376,7 +377,7 @@ async def run_research_analyzer(prompt_text: str, logger) -> str:
     Run the research analysis workflow using ResearchAnalyzerAgent.
 
     Args:
-        prompt_text: Input prompt text containing research information
+        prompt_text: Input prompt text containing research information (or file path)
         logger: Logger instance for logging information
 
     Returns:
@@ -387,6 +388,23 @@ async def run_research_analyzer(prompt_text: str, logger) -> str:
         print("📊 Starting research analysis...")
         print(f"Input prompt length: {len(prompt_text) if prompt_text else 0}")
         print(f"Input preview: {prompt_text[:200] if prompt_text else 'None'}...")
+
+        # If prompt_text is a file path, read the file content
+        if prompt_text and os.path.isfile(prompt_text):
+            print(f"📁 Detected file path: {prompt_text}")
+            try:
+                with open(prompt_text, "r", encoding="utf-8") as f:
+                    file_content = f.read()
+                print(f"📄 Read file content: {len(file_content)} characters")
+                # Include both the file path info and content for the analyzer
+                prompt_text = f"""PAPER_FILE_PATH: {prompt_text}
+
+PAPER_CONTENT:
+{file_content}
+"""
+                print(f"📝 Prepared prompt with file content (total: {len(prompt_text)} chars)")
+            except Exception as e:
+                print(f"⚠️ Failed to read file, using path as prompt: {e}")
 
         if not prompt_text or prompt_text.strip() == "":
             raise ValueError(
@@ -573,7 +591,8 @@ async def run_resource_processor(analysis_result: str, logger) -> str:
                     "status": "success",
                     "paper_id": next_id,
                     "paper_dir": paper_dir,
-                    "file_path": dest_path,
+                    "paper_path": dest_path,  # Use paper_path for compatibility with FileProcessor
+                    "file_path": dest_path,   # Keep file_path for backwards compatibility
                     "message": f"File successfully processed to {paper_dir}",
                     "operation_details": operation_result,
                 }
@@ -705,27 +724,55 @@ async def run_code_analyzer(
 
     print(f"   Agent configurations: {agent_config}")
 
-    concept_analysis_agent = Agent(
-        name="ConceptAnalysisAgent",
-        instruction=prompts["concept_analysis"],
-        server_names=agent_config["concept_analysis"],
-    )
-    algorithm_analysis_agent = Agent(
-        name="AlgorithmAnalysisAgent",
-        instruction=prompts["algorithm_analysis"],
-        server_names=agent_config["algorithm_analysis"],
-    )
-    code_planner_agent = Agent(
-        name="CodePlannerAgent",
-        instruction=prompts["code_planning"],
-        server_names=agent_config["code_planner"],
-    )
+    # Check if we're using Bedrock - if so, use sequential execution instead of ParallelLLM
+    # ParallelLLM's fan_in mechanism is not compatible with Bedrock's response format
+    use_sequential = is_bedrock_configured()
 
-    code_aggregator_agent = ParallelLLM(
-        fan_in_agent=code_planner_agent,
-        fan_out_agents=[concept_analysis_agent, algorithm_analysis_agent],
-        llm_factory=get_preferred_llm_class(),
-    )
+    if use_sequential:
+        print("   🔄 Using sequential execution (Bedrock mode)")
+        # Create a single combined agent for sequential execution
+        combined_instruction = f"""You are an expert research paper analyzer and code planner.
+
+TASK 1 - Concept Analysis:
+{prompts["concept_analysis"]}
+
+TASK 2 - Algorithm Analysis:
+{prompts["algorithm_analysis"]}
+
+TASK 3 - Code Planning:
+{prompts["code_planning"]}
+
+Complete all three tasks in sequence and provide a comprehensive analysis."""
+
+        code_planner_agent = Agent(
+            name="CodePlannerAgent",
+            instruction=combined_instruction,
+            server_names=agent_config["code_planner"],
+        )
+        code_aggregator_agent = None  # Will use code_planner_agent directly
+    else:
+        print("   🚀 Using parallel execution (Standard mode)")
+        concept_analysis_agent = Agent(
+            name="ConceptAnalysisAgent",
+            instruction=prompts["concept_analysis"],
+            server_names=agent_config["concept_analysis"],
+        )
+        algorithm_analysis_agent = Agent(
+            name="AlgorithmAnalysisAgent",
+            instruction=prompts["algorithm_analysis"],
+            server_names=agent_config["algorithm_analysis"],
+        )
+        code_planner_agent = Agent(
+            name="CodePlannerAgent",
+            instruction=prompts["code_planning"],
+            server_names=agent_config["code_planner"],
+        )
+
+        code_aggregator_agent = ParallelLLM(
+            fan_in_agent=code_planner_agent,
+            fan_out_agents=[concept_analysis_agent, algorithm_analysis_agent],
+            llm_factory=get_preferred_llm_class(),
+        )
 
     base_max_tokens, _ = get_token_limits()
 
@@ -808,12 +855,21 @@ The goal is to create a reproduction plan detailed enough for independent implem
     max_retries = 3
     retry_count = 0
 
+    # Select the appropriate agent based on execution mode
+    # Sequential mode (Bedrock): attach LLM to agent and use it directly
+    # Parallel mode (Standard): use code_aggregator_agent (ParallelLLM)
+    if use_sequential:
+        # For sequential mode, we need to attach the LLM to the agent
+        execution_agent = await code_planner_agent.attach_llm(get_preferred_llm_class())
+    else:
+        execution_agent = code_aggregator_agent
+
     while retry_count < max_retries:
         try:
             print(
                 f"🚀 Attempting code analysis (attempt {retry_count + 1}/{max_retries})"
             )
-            result = await code_aggregator_agent.generate_str(
+            result = await execution_agent.generate_str(
                 message=message, request_params=enhanced_params
             )
 
@@ -984,7 +1040,23 @@ async def orchestrate_research_analysis_agent(
         progress_callback(
             25, "📥 Processing downloads and preparing document structure..."
         )
-    download_result = await run_resource_processor(analysis_result, logger)
+
+    # If input_source is a file path, construct proper input for resource processor
+    # instead of relying on LLM analysis result which may not contain file path info
+    if os.path.isfile(input_source):
+        # Construct a proper JSON for the resource processor
+        file_info = json.dumps({
+            "input_type": "file",
+            "path": input_source,
+            "paper_info": {
+                "title": os.path.basename(input_source),
+                "authors": [],
+                "year": ""
+            }
+        })
+        download_result = await run_resource_processor(file_info, logger)
+    else:
+        download_result = await run_resource_processor(analysis_result, logger)
     print("download result:", download_result)
 
     return analysis_result, download_result

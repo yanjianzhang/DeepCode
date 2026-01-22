@@ -104,9 +104,10 @@ def get_preferred_llm_class(config_path: str = "mcp_agent.secrets.yaml") -> Type
     Select the LLM class based on user preference and API key availability.
 
     Priority:
-    1. Check mcp_agent.config.yaml for llm_provider preference
-    2. Verify the preferred provider has API key
-    3. Fallback to first available provider
+    1. Check for AWS Bedrock configuration (highest priority if available)
+    2. Check mcp_agent.config.yaml for llm_provider preference
+    3. Verify the preferred provider has API key
+    4. Fallback to first available provider
 
     Args:
         config_path: Path to the secrets YAML configuration file
@@ -115,6 +116,17 @@ def get_preferred_llm_class(config_path: str = "mcp_agent.secrets.yaml") -> Type
         class: The preferred LLM class
     """
     try:
+        # Check for Bedrock configuration first (highest priority)
+        aws_access_key = os.environ.get("AWS_ACCESS_KEY") or os.environ.get("AWS_ACCESS_KEY_ID", "")
+        aws_secret_key = os.environ.get("AWS_SECRET_KEY") or os.environ.get("AWS_SECRET_ACCESS_KEY", "")
+        aws_region = os.environ.get("AWS_REGION", "")
+        bedrock_model_arn = os.environ.get("ANTHROPIC_BEDROCK_MODEL_ARN", "")
+
+        if aws_access_key and aws_secret_key and aws_region and bedrock_model_arn:
+            print(f"🤖 Using BedrockAugmentedLLM (AWS Bedrock configuration found)")
+            from utils.bedrock_llm import BedrockAugmentedLLM
+            return BedrockAugmentedLLM
+
         # Get API keys with environment variable override
         keys = get_api_keys(config_path)
         google_key = keys["google"]
