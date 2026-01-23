@@ -30,6 +30,59 @@ from prompts.code_prompts import (
 )
 
 
+def extract_mcp_tool_result(result: Any) -> Any:
+    """
+    Extract the actual data from an MCP tool call result.
+
+    MCP tools return CallToolResult objects with a 'content' attribute containing
+    TextContent objects. This function extracts the actual JSON/text data.
+
+    Args:
+        result: The raw result from mcp_agent.call_tool()
+
+    Returns:
+        Parsed JSON data if possible, otherwise the raw text/result
+    """
+    # If it's already a string, try to parse as JSON
+    if isinstance(result, str):
+        try:
+            return json.loads(result)
+        except json.JSONDecodeError:
+            return result
+
+    # If it's already a dict, return as-is
+    if isinstance(result, dict):
+        return result
+
+    # Handle CallToolResult objects (from mcp.types)
+    if hasattr(result, 'content'):
+        content = result.content
+        # content is typically a list of TextContent, ImageContent, etc.
+        if isinstance(content, list) and len(content) > 0:
+            first_content = content[0]
+            # TextContent has a 'text' attribute
+            if hasattr(first_content, 'text'):
+                text_content = first_content.text
+                try:
+                    return json.loads(text_content)
+                except json.JSONDecodeError:
+                    return text_content
+            # For other content types, try to get string representation
+            return str(first_content)
+        elif isinstance(content, str):
+            try:
+                return json.loads(content)
+            except json.JSONDecodeError:
+                return content
+
+    # Handle structuredContent if available
+    if hasattr(result, 'structuredContent') and result.structuredContent:
+        return result.structuredContent
+
+    # Fallback: return as-is or convert to string
+    return result
+
+
 class CodeImplementationAgent:
     """
     Code Implementation Agent for systematic file-by-file development
@@ -302,20 +355,16 @@ class CodeImplementationAgent:
                     "read_code_mem", {"file_paths": [file_path]}
                 )
 
-                # Parse the result to check if summary was found
-                import json
+                # Use extract_mcp_tool_result to handle CallToolResult objects
+                result_data = extract_mcp_tool_result(read_code_mem_result)
 
-                if isinstance(read_code_mem_result, str):
-                    try:
-                        result_data = json.loads(read_code_mem_result)
-                        # Check if any summaries were found in the results
-                        should_use_summary = (
-                            result_data.get("status")
-                            in ["all_summaries_found", "partial_summaries_found"]
-                            and result_data.get("summaries_found", 0) > 0
-                        )
-                    except json.JSONDecodeError:
-                        should_use_summary = False
+                # Check if any summaries were found in the results
+                if isinstance(result_data, dict):
+                    should_use_summary = (
+                        result_data.get("status")
+                        in ["all_summaries_found", "partial_summaries_found"]
+                        and result_data.get("summaries_found", 0) > 0
+                    )
             except Exception as e:
                 self.logger.debug(f"read_code_mem check failed for {file_path}: {e}")
                 should_use_summary = False
@@ -329,13 +378,10 @@ class CodeImplementationAgent:
                     "read_code_mem", {"file_paths": [file_path]}
                 )
 
-                # Modify the result to indicate it was originally a read_file call
-                import json
+                # Use extract_mcp_tool_result to handle CallToolResult objects
+                result_data = extract_mcp_tool_result(result)
 
                 try:
-                    result_data = (
-                        json.loads(result) if isinstance(result, str) else result
-                    )
                     if isinstance(result_data, dict):
                         # Extract the specific file result for the single file we requested
                         file_results = result_data.get("results", [])
@@ -365,9 +411,10 @@ class CodeImplementationAgent:
                             result_data["optimization"] = "redirected_to_read_code_mem"
                             final_result = json.dumps(result_data, ensure_ascii=False)
                     else:
-                        final_result = result
-                except (json.JSONDecodeError, TypeError):
-                    final_result = result
+                        final_result = str(result_data) if result_data else "{}"
+                except (json.JSONDecodeError, TypeError) as e:
+                    self.logger.warning(f"Failed to process read_code_mem result: {e}")
+                    final_result = str(result_data) if result_data else "{}"
 
                 return {
                     "tool_id": tool_call["id"],
@@ -943,14 +990,10 @@ class CodeImplementationAgent:
                         "read_code_mem", {"file_paths": [file_path]}
                     )
 
-                    # Parse the result to check if summary was found
-                    import json
+                    # Use extract_mcp_tool_result to handle CallToolResult objects
+                    result_data = extract_mcp_tool_result(result)
 
-                    result_data = (
-                        json.loads(result) if isinstance(result, str) else result
-                    )
-
-                    if (
+                    if isinstance(result_data, dict) and (
                         result_data.get("status")
                         in ["all_summaries_found", "partial_summaries_found"]
                         and result_data.get("summaries_found", 0) > 0
@@ -1049,12 +1092,10 @@ class CodeImplementationAgent:
                 "read_code_mem", {"file_paths": [test_file_path]}
             )
 
-            # Parse the result to check if summary was found
-            import json
+            # Use extract_mcp_tool_result to handle CallToolResult objects
+            result_data = extract_mcp_tool_result(result)
 
-            result_data = json.loads(result) if isinstance(result, str) else result
-
-            return (
+            return isinstance(result_data, dict) and (
                 result_data.get("status")
                 in ["all_summaries_found", "partial_summaries_found"]
                 and result_data.get("summaries_found", 0) > 0

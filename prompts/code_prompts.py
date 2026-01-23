@@ -685,8 +685,20 @@ complete_reproduction_plan:
     [Include ALL necessary files including README.md and requirements.txt]
     [Organize based on what this paper actually contains and needs]
     [Create directories and files that make sense for this specific implementation]
-    [IMPORTANT: Include executable files (e.g., main.py, run.py, train.py, demo.py) - choose names based on repo content]
-    [Design executable entry points that match the paper's main functionality and experiments]
+
+    **MANDATORY ENTRY POINT**: You MUST include a main.py file at the project root level that:
+    - Serves as the single entry point to run all experiments
+    - Can be executed with: python3 main.py
+    - Orchestrates the complete workflow: data loading, training, evaluation, and result output
+    - Includes a __main__ guard: if __name__ == "__main__": main()
+    - Accepts optional command-line arguments for configuration
+
+    **MANDATORY REPRODUCE.SH**: You MUST include a reproduce.sh file at the project root that:
+    - Sets up environment (PYTHONPATH, installs dependencies)
+    - Runs main.py to execute all experiments
+    - Can be executed with: bash reproduce.sh
+
+    [Design other executable scripts (train.py, evaluate.py, etc.) that main.py can call]
     [NOTE: README.md and requirements.txt should be implemented LAST after all code files]
 
   # SECTION 2: Implementation Components
@@ -1088,11 +1100,58 @@ Before considering the task complete, ensure you have:
 - ✅ Working integration that can run the paper's experiments
 - ✅ Complete codebase that reproduces all metrics, figures, tables, and findings from the paper
 - ✅ Basic documentation explaining how to reproduce results
+- ✅ **CRITICAL: A main.py entry point** at the project root that runs with `python3 main.py`
+- ✅ **CRITICAL: A reproduce.sh script** at the submission root for automated execution
+
+**MANDATORY ENTRY POINT REQUIREMENT**:
+You MUST create a main.py file at the project root (inside generate_code/<project>/) that:
+1. Serves as the SINGLE entry point to run all experiments
+2. Can be executed simply with: `python3 main.py`
+3. Imports and orchestrates the complete workflow (data loading, model training, evaluation)
+4. Uses argparse or similar for optional configuration
+5. Outputs clear progress messages and results
+6. Has proper error handling
+
+**MANDATORY REPRODUCE.SH REQUIREMENT**:
+You MUST also create a reproduce.sh file at the submission root (generate_code/reproduce.sh) that:
+1. Sets up the environment (PYTHONPATH, dependencies)
+2. Runs the main.py entry point
+3. Is executable with: `bash reproduce.sh`
+
+Example reproduce.sh structure:
+```bash
+#!/bin/bash
+set -e
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
+echo "=== Setting up environment ==="
+export PYTHONPATH="$SCRIPT_DIR:$PYTHONPATH"
+pip install -r requirements.txt 2>/dev/null || true
+echo "=== Running experiments ==="
+python3 main.py
+echo "=== Reproduction complete ==="
+```
+
+Example main.py structure:
+```python
+#!/usr/bin/env python3
+# Main entry point for paper reproduction.
+import argparse
+def main():
+    parser = argparse.ArgumentParser(description='Reproduce paper experiments')
+    args = parser.parse_args()
+    print("Starting experiment reproduction...")
+    # Call your experiment functions here
+    print("Experiment completed!")
+if __name__ == "__main__":
+    main()
+```
 
 **CRITICAL SUCCESS FACTORS**:
 - **Accuracy**: Match paper specifications exactly (versions, parameters, configurations)
 - **Completeness**: Implement every method discussed, not just the main contribution
 - **Functionality**: Code must actually work and run experiments successfully
+- **Runnability**: Both main.py and reproduce.sh MUST be executable without errors
 
 **AVOID DISTRACTIONS**: Focus implementation time on paper requirements rather than advanced tooling, extensive documentation, or optimization utilities that aren't needed for reproduction.
 
@@ -1143,11 +1202,38 @@ Before considering the task complete, ensure you have:
 - ✅ Working integration that can run the paper's experiments
 - ✅ Complete codebase that reproduces all metrics, figures, tables, and findings from the paper
 - ✅ Basic documentation explaining how to reproduce results
+- ✅ **CRITICAL: A main.py entry point** at the project root that runs with `python3 main.py`
+- ✅ **CRITICAL: A reproduce.sh script** at the submission root for automated execution
+
+**MANDATORY ENTRY POINT REQUIREMENT**:
+You MUST create a main.py file at the project root (inside generate_code/<project>/) that:
+1. Serves as the SINGLE entry point to run all experiments
+2. Can be executed simply with: `python3 main.py`
+3. Imports and orchestrates the complete workflow
+4. Has proper error handling
+
+**MANDATORY REPRODUCE.SH REQUIREMENT**:
+You MUST also create a reproduce.sh file at the submission root (generate_code/reproduce.sh) that:
+1. Sets up the environment (PYTHONPATH, dependencies)
+2. Runs the main.py entry point
+3. Is executable with: `bash reproduce.sh`
+
+Example reproduce.sh:
+```bash
+#!/bin/bash
+set -e
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
+export PYTHONPATH="$SCRIPT_DIR:$PYTHONPATH"
+pip install -r requirements.txt 2>/dev/null || true
+python3 main.py
+```
 
 **CRITICAL SUCCESS FACTORS**:
 - **Accuracy**: Match paper specifications exactly (versions, parameters, configurations)
 - **Completeness**: Implement every method discussed, not just the main contribution
 - **Functionality**: Code must actually work and run experiments successfully
+- **Runnability**: Both main.py and reproduce.sh MUST be executable without errors
 
 **AVOID DISTRACTIONS**: Focus implementation time on paper requirements rather than advanced tooling, extensive documentation, or optimization utilities that aren't needed for reproduction.
 
@@ -1244,11 +1330,27 @@ Before considering the task complete, ensure you have:
 - ✅ Working integration that can run all specified functionality
 - ✅ Complete codebase that implements all features, functionality, and outputs specified in the requirements
 - ✅ Basic documentation explaining how to use the implemented system
+- ✅ **CRITICAL: A main.py entry point** at the project root that runs with `python3 main.py`
+- ✅ **CRITICAL: A reproduce.sh script** at the submission root for automated execution
+
+**MANDATORY ENTRY POINT REQUIREMENT**:
+You MUST create a main.py file at the project root that:
+1. Serves as the SINGLE entry point to run all functionality
+2. Can be executed simply with: `python3 main.py`
+3. Imports and orchestrates the complete workflow
+4. Has proper error handling
+
+**MANDATORY REPRODUCE.SH REQUIREMENT**:
+You MUST also create a reproduce.sh file at the submission root (generate_code/reproduce.sh) that:
+1. Sets up the environment (PYTHONPATH, dependencies)
+2. Runs the main.py entry point
+3. Is executable with: `bash reproduce.sh`
 
 **CRITICAL SUCCESS FACTORS**:
 - **Accuracy**: Match requirement specifications exactly (versions, parameters, configurations)
 - **Completeness**: Implement every component discussed, not just the main functionality
 - **Functionality**: Code must actually work and run all specified features successfully
+- **Runnability**: Both main.py and reproduce.sh MUST be executable without errors
 
 **AVOID DISTRACTIONS**: Focus implementation time on requirement fulfillment rather than advanced tooling, extensive documentation, or optimization utilities that aren't needed for the core functionality.
 
@@ -1272,12 +1374,13 @@ project_plan:
   # CUSTOM FILE TREE STRUCTURE (max 15 files, design as needed)
   file_structure: |
     project_root/
-    ├── main.py                 # Entry point
+    ├── main.py                 # Entry point (MANDATORY)
+    ├── reproduce.sh            # Automated execution script (MANDATORY)
+    ├── requirements.txt        # Dependencies
     ├── [specific_files]        # Core files based on project type
     ├── [folder]/               # Organized folders if needed
     │   ├── __init__.py
     │   └── [module].py
-    ├── requirements.txt        # Dependencies
     └── README.md              # Basic documentation
 
     # IMPORTANT: Output ACTUAL file tree structure above, not placeholder text
@@ -1763,8 +1866,15 @@ complete_reproduction_plan:
     [Include ALL necessary files including README.md and requirements.txt]
     [Organize based on what this paper actually contains and needs]
     [Create directories and files that make sense for this specific implementation]
-    [IMPORTANT: Include executable files (e.g., main.py, run.py, train.py, demo.py) - choose names based on repo content]
-    [Design executable entry points that match the paper's main functionality and experiments]
+
+    **MANDATORY ENTRY POINT**: You MUST include a main.py file at the project root level that:
+    - Serves as the single entry point to run all experiments
+    - Can be executed with: python3 main.py
+    - Orchestrates the complete workflow: data loading, training, evaluation, and result output
+    - Includes a __main__ guard: if __name__ == "__main__": main()
+    - Accepts optional command-line arguments for configuration
+
+    [Design other executable scripts (train.py, evaluate.py, etc.) that main.py can call]
     [FILE COUNT LIMIT: Keep total file count around 20 files - not too many, focus on essential components only]
     [NOTE: README.md and requirements.txt should be implemented LAST after all code files]
 

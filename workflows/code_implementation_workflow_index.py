@@ -23,6 +23,60 @@ from typing import Dict, Any, Optional, List
 # MCP Agent imports
 from mcp_agent.agents.agent import Agent
 
+
+def extract_mcp_tool_result(result: Any) -> Any:
+    """
+    Extract the actual data from an MCP tool call result.
+
+    MCP tools return CallToolResult objects with a 'content' attribute containing
+    TextContent objects. This function extracts the actual JSON/text data.
+
+    Args:
+        result: The raw result from mcp_agent.call_tool()
+
+    Returns:
+        Parsed JSON data if possible, otherwise the raw text/result
+    """
+    # If it's already a string, try to parse as JSON
+    if isinstance(result, str):
+        try:
+            return json.loads(result)
+        except json.JSONDecodeError:
+            return result
+
+    # If it's already a dict, return as-is
+    if isinstance(result, dict):
+        return result
+
+    # Handle CallToolResult objects (from mcp.types)
+    if hasattr(result, 'content'):
+        content = result.content
+        # content is typically a list of TextContent, ImageContent, etc.
+        if isinstance(content, list) and len(content) > 0:
+            first_content = content[0]
+            # TextContent has a 'text' attribute
+            if hasattr(first_content, 'text'):
+                text_content = first_content.text
+                try:
+                    return json.loads(text_content)
+                except json.JSONDecodeError:
+                    return text_content
+            # For other content types, try to get string representation
+            return str(first_content)
+        elif isinstance(content, str):
+            try:
+                return json.loads(content)
+            except json.JSONDecodeError:
+                return content
+
+    # Handle structuredContent if available
+    if hasattr(result, 'structuredContent') and result.structuredContent:
+        return result.structuredContent
+
+    # Fallback: return as-is or convert to string
+    return result
+
+
 # Local imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from prompts.code_prompts import STRUCTURE_GENERATOR_PROMPT
@@ -1358,11 +1412,11 @@ Requirements:
                 history_result = await self.mcp_agent.call_tool(
                     "get_operation_history", {"last_n": 30}
                 )
-                history_data = (
-                    json.loads(history_result)
-                    if isinstance(history_result, str)
-                    else history_result
-                )
+                # Use extract_mcp_tool_result to handle CallToolResult objects
+                history_data = extract_mcp_tool_result(history_result)
+                # Ensure history_data is a dict with expected structure
+                if not isinstance(history_data, dict):
+                    history_data = {"total_operations": 0, "history": []}
             else:
                 history_data = {"total_operations": 0, "history": []}
 
