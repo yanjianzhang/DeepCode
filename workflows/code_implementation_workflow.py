@@ -86,7 +86,21 @@ from workflows.agents import CodeImplementationAgent
 from workflows.agents.memory_agent_concise import ConciseMemoryAgent
 from config.mcp_tool_definitions import get_mcp_tools
 from utils.llm_utils import get_preferred_llm_class, get_default_models, load_api_config
-# DialogueLogger removed - no longer needed
+
+# Common utilities for tool validation
+try:
+    from paperbench.solvers.common.tool_utils import validate_tool_call
+except ImportError:
+    # Fallback if common module is not available (e.g., standalone usage)
+    def validate_tool_call(tool_call: Dict, tools: List[Dict], log_errors: bool = True) -> bool:
+        """Fallback validation function if common module is unavailable."""
+        tool_name = tool_call.get("name", "")
+        tool_input = tool_call.get("input", {})
+        tool_def = next((t for t in tools if t.get("name") == tool_name), None)
+        if not tool_def:
+            return False
+        required = tool_def.get("input_schema", {}).get("required", [])
+        return all(param in tool_input for param in required)
 
 
 class CodeImplementationWorkflow:
@@ -732,8 +746,25 @@ Requirements:
             "No available LLM API - please check your API keys in configuration"
         )
 
+    def _validate_tool_call(self, tool_call: Dict, tools: List[Dict]) -> bool:
+        """
+        Validate that a tool call has all required parameters.
+
+        Uses the shared validate_tool_call function from common utilities.
+        This catches issues like output truncation causing missing 'content'
+        in write_file calls.
+
+        Args:
+            tool_call: The tool call dict with 'name' and 'input'
+            tools: List of tool definitions
+
+        Returns:
+            True if valid, False otherwise
+        """
+        return validate_tool_call(tool_call, tools, log_errors=True)
+
     async def _call_llm_with_tools(
-        self, client, client_type, system_message, messages, tools, max_tokens=8192
+        self, client, client_type, system_message, messages, tools, max_tokens=16384
     ):
         """Call LLM with tools"""
         try:
@@ -790,9 +821,16 @@ Requirements:
             if block.type == "text":
                 content += block.text
             elif block.type == "tool_use":
-                tool_calls.append(
-                    {"id": block.id, "name": block.name, "input": block.input}
-                )
+                tool_call = {"id": block.id, "name": block.name, "input": block.input}
+                # Validate the tool call has all required parameters
+                if self._validate_tool_call(tool_call, tools):
+                    tool_calls.append(tool_call)
+                else:
+                    self.logger.warning(
+                        f"Skipping invalid tool call: {block.name} - "
+                        f"missing required parameters (likely output truncation). "
+                        f"Consider increasing max_tokens."
+                    )
 
         return {"content": content, "tool_calls": tool_calls}
 
@@ -917,10 +955,17 @@ Requirements:
                                 if hasattr(fc, "args") and fc.args
                                 else {},
                             }
-                            self.logger.debug(
-                                f"Google function_call parsed: {tool_call}"
-                            )
-                            tool_calls.append(tool_call)
+                            # Validate the tool call has all required parameters
+                            if self._validate_tool_call(tool_call, tools):
+                                self.logger.debug(
+                                    f"Google function_call parsed: {tool_call}"
+                                )
+                                tool_calls.append(tool_call)
+                            else:
+                                self.logger.warning(
+                                    f"Skipping invalid Google tool call: {tool_call.get('name')} - "
+                                    f"missing required parameters"
+                                )
 
         return {"content": content, "tool_calls": tool_calls}
 
@@ -1203,13 +1248,20 @@ Requirements:
                 try:
                     # Attempt to parse tool call arguments
                     parsed_input = json.loads(tool_call.function.arguments)
-                    tool_calls.append(
-                        {
-                            "id": tool_call.id,
-                            "name": tool_call.function.name,
-                            "input": parsed_input,
-                        }
-                    )
+                    parsed_tool_call = {
+                        "id": tool_call.id,
+                        "name": tool_call.function.name,
+                        "input": parsed_input,
+                    }
+                    # Validate the tool call has all required parameters
+                    if self._validate_tool_call(parsed_tool_call, tools):
+                        tool_calls.append(parsed_tool_call)
+                    else:
+                        print(
+                            f"   ⚠️  Skipping invalid OpenAI tool call: {tool_call.function.name} - "
+                            f"missing required parameters"
+                        )
+                        continue
                 except json.JSONDecodeError as e:
                     # Detailed JSON parsing error logging
                     print("\n❌ JSON Parsing Error in tool call:")
@@ -1228,14 +1280,18 @@ Requirements:
                     )
 
                     if repaired:
-                        print("   ✅ JSON repaired successfully")
-                        tool_calls.append(
-                            {
-                                "id": tool_call.id,
-                                "name": tool_call.function.name,
-                                "input": repaired,
-                            }
-                        )
+                        repaired_tool_call = {
+                            "id": tool_call.id,
+                            "name": tool_call.function.name,
+                            "input": repaired,
+                        }
+                        # Validate repaired tool call
+                        if self._validate_tool_call(repaired_tool_call, tools):
+                            print("   ✅ JSON repaired successfully")
+                            tool_calls.append(repaired_tool_call)
+                        else:
+                            print("   ⚠️  Repaired JSON still missing required parameters, skipping")
+                            continue
                     else:
                         # Skip this tool call if repair failed
                         print("   ⚠️  Skipping unrepairable tool call")
