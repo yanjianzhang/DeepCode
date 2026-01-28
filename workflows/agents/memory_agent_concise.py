@@ -157,29 +157,40 @@ class ConciseMemoryAgent:
 
     def _extract_all_files(self) -> List[str]:
         """
-        Extract all code files - prioritizes generated directory over plan parsing
+        Extract all code files - combines plan structure and generated directory
 
         Strategy:
-        1. First try to extract from the generated code directory (reliable)
-        2. Fall back to plan parsing if directory doesn't exist yet
+        1. First extract from plan to get the intended file structure
+        2. Also check generated directory for any additional files
+        3. Merge both lists to ensure comprehensive coverage
 
         Returns:
             List of all file paths that should be implemented
         """
-        # Try extracting from generated directory first (more reliable)
+        all_files = set()
+
+        # Always start with plan-based extraction to know intended structure
+        plan_files = self._extract_all_files_from_plan()
+        if plan_files:
+            all_files.update(plan_files)
+            self.logger.info(
+                f"📁 Extracted {len(plan_files)} files from plan"
+            )
+
+        # Also check generated directory for any additional files
         if os.path.exists(self.code_directory):
             files_from_dir = self._extract_files_from_generated_directory()
             if files_from_dir:
-                self.logger.info(
-                    f"📁 Extracted {len(files_from_dir)} files from generated directory"
-                )
-                return files_from_dir
+                new_files = set(files_from_dir) - all_files
+                if new_files:
+                    self.logger.info(
+                        f"📁 Found {len(new_files)} additional files in generated directory"
+                    )
+                all_files.update(files_from_dir)
 
-        # Fall back to plan parsing
-        self.logger.info(
-            "📁 Generated directory not found, extracting from plan (less reliable)"
-        )
-        return self._extract_all_files_from_plan()
+        result = sorted(list(all_files))
+        self.logger.info(f"📁 Total files to track: {len(result)}")
+        return result
 
     def _extract_files_from_generated_directory(self) -> List[str]:
         """

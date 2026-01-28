@@ -371,7 +371,7 @@ Requirements:
         max_iterations = 800
         iteration = 0
         start_time = time.time()
-        max_time = 7200  # 120 minutes (2 hours)
+        max_time = 14400  # 240 minutes (4 hours) - increased for more thorough implementation
 
         # Initialize specialized agents
         code_agent = CodeImplementationAgent(
