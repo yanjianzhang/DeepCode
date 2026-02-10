@@ -10,7 +10,7 @@ __author__ = "DeepCode Team"
 __url__ = "https://github.com/HKUDS/DeepCode"
 
 # Import main components for easy access
-from utils import FileProcessor, DialogueLogger
+from .utils import FileProcessor, DialogueLogger
 
 __all__ = [
     "FileProcessor",

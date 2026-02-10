@@ -364,6 +364,28 @@ Requirements:
             code_directory,
         )
 
+        # VALIDATION: Check if plan parser found any files to implement
+        all_files = memory_agent.get_all_files_list()
+        if not all_files:
+            self.logger.error(
+                "❌ ERROR: Plan parser extracted 0 files from the implementation plan!"
+            )
+            self.logger.error(
+                "This indicates the plan format is not recognized by the parser."
+            )
+            self.logger.error(
+                "Please check the file_structure section in initial_plan.txt"
+            )
+            raise ValueError(
+                "Plan parser failed to extract any files from the implementation plan. "
+                "The file_structure section may be in an unsupported format. "
+                "Expected formats: YAML-style nested directories, tree structure with ├──/└──, "
+                "or simple list with file paths."
+            )
+        else:
+            self.logger.info(f"✅ Plan parser found {len(all_files)} files to implement")
+            self.logger.info(f"📄 Sample files: {all_files[:5]}...")
+
         # Log read tools configuration
         read_tools_status = "ENABLED" if self.enable_read_tools else "DISABLED"
         self.logger.info(
@@ -498,6 +520,31 @@ Requirements:
                 messages = memory_agent.apply_memory_optimization(
                     current_system_message, messages, files_implemented_count
                 )
+
+        # VALIDATION: Check if any code files were actually implemented
+        implemented_files = memory_agent.get_implemented_files()
+        all_files = memory_agent.get_all_files_list()
+        code_extensions = (".py", ".sh", ".c", ".cpp", ".java", ".js", ".ts", ".go", ".rs")
+        code_files_implemented = [f for f in implemented_files if f.endswith(code_extensions)]
+
+        if not code_files_implemented:
+            self.logger.error(
+                "❌ ERROR: No code files were implemented!"
+            )
+            self.logger.error(
+                f"Total files in plan: {len(all_files)}"
+            )
+            self.logger.error(
+                f"Files marked as implemented: {len(implemented_files)}"
+            )
+            self.logger.error(
+                f"Implemented files: {implemented_files}"
+            )
+            # Don't raise here - let the report be generated but log the error clearly
+            self.logger.error(
+                "⚠️ WARNING: Code implementation appears to have failed - "
+                "only documentation files may have been created!"
+            )
 
         return await self._generate_pure_code_final_report_with_concise_agents(
             iteration, time.time() - start_time, code_agent, memory_agent

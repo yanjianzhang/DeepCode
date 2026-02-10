@@ -323,14 +323,23 @@ class ConciseMemoryAgent:
             lines = self.initial_plan.split("\n")
             files = []
 
-            # Method 1: Try to extract from tree structure in file_structure section
-            files.extend(self._extract_from_tree_structure(lines))
+            # Method 1: Try to extract from YAML-style nested structure
+            # This handles formats like:
+            #   submission/:
+            #     - README.md
+            #     src/:
+            #       - bam.py
+            files.extend(self._extract_from_yaml_structure(lines))
 
-            # Method 2: If no files found, try to extract from simple list format
+            # Method 2: Try to extract from tree structure (├── └── format)
+            if not files:
+                files.extend(self._extract_from_tree_structure(lines))
+
+            # Method 3: If no files found, try to extract from simple list format
             if not files:
                 files.extend(self._extract_from_simple_list(lines))
 
-            # Method 3: If still no files, try to extract from anywhere in the plan
+            # Method 4: If still no files, try to extract from anywhere in the plan
             if not files:
                 files.extend(self._extract_from_plan_content(lines))
 
@@ -349,6 +358,129 @@ class ConciseMemoryAgent:
         except Exception as e:
             self.logger.error(f"Failed to extract files from initial plan: {e}")
             return []
+
+    def _extract_from_yaml_structure(self, lines: List[str]) -> List[str]:
+        """
+        Extract files from YAML-style nested directory structure.
+
+        Handles formats like:
+        ```yaml
+        file_structure:
+          submission/:
+            - README.md
+            - requirements.txt
+            src/:
+              - __init__.py
+              - bam.py                    # Main BaM algorithm
+            experiments/:
+              - exp_gaussian_targets.py
+        ```
+
+        Key features:
+        - Directory names end with /: or just /
+        - Files are listed with - prefix
+        - Indentation determines hierarchy
+        - Comments after # are stripped
+        """
+        files = []
+        in_file_structure = False
+
+        # Stack to track current directory path: [(indent_level, dir_name), ...]
+        dir_stack = []
+
+        for line in lines:
+            # Detect start of file_structure section
+            if "file_structure:" in line or "file_structure |" in line:
+                in_file_structure = True
+                dir_stack = []
+                continue
+
+            # Detect end of file_structure section (new top-level YAML key)
+            if in_file_structure and line.strip() and not line.startswith(" ") and not line.startswith("\t"):
+                if ":" in line and not line.strip().startswith("-") and not line.strip().startswith("#"):
+                    # Check if it's a new section (not a continuation)
+                    if not line.strip().endswith("/:") and not line.strip().endswith("/"):
+                        break
+
+            if not in_file_structure:
+                continue
+
+            # Skip empty lines and pure comments
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+
+            # Calculate indentation level (spaces or tabs)
+            indent = 0
+            for char in line:
+                if char == " ":
+                    indent += 1
+                elif char == "\t":
+                    indent += 4  # Treat tab as 4 spaces
+                else:
+                    break
+
+            # Remove inline comments
+            if "#" in stripped:
+                stripped = stripped.split("#")[0].strip()
+
+            # Pop directories from stack that are at same or deeper indentation
+            while dir_stack and dir_stack[-1][0] >= indent:
+                dir_stack.pop()
+
+            # Check if this is a directory (ends with /: or / or is a known dir pattern)
+            is_directory = False
+            dir_name = None
+
+            # Pattern 1: "dirname/:" or "dirname:" with /
+            if stripped.endswith("/:") or (stripped.endswith(":") and "/" in stripped):
+                is_directory = True
+                dir_name = stripped.rstrip(":").rstrip("/")
+            # Pattern 2: "dirname/" without colon
+            elif stripped.endswith("/") and not stripped.startswith("-"):
+                is_directory = True
+                dir_name = stripped.rstrip("/")
+            # Pattern 3: Known directory names followed by colon (like "src:" without /)
+            elif stripped.endswith(":") and not stripped.startswith("-"):
+                potential_dir = stripped.rstrip(":")
+                # Check if it looks like a directory name
+                if potential_dir.replace("_", "").replace("-", "").isalnum():
+                    is_directory = True
+                    dir_name = potential_dir
+
+            if is_directory and dir_name:
+                dir_stack.append((indent, dir_name))
+                continue
+
+            # Check if this is a file (starts with - )
+            if stripped.startswith("-"):
+                filename = stripped[1:].strip()
+                # Remove any remaining quotes
+                filename = filename.strip('"').strip("'")
+
+                # Skip if it looks like a directory
+                if filename.endswith("/") or filename.endswith(":"):
+                    dir_name = filename.rstrip("/").rstrip(":")
+                    dir_stack.append((indent, dir_name))
+                    continue
+
+                # Skip empty or placeholder entries
+                if not filename or filename == ".gitkeep":
+                    continue
+
+                # Build full path from directory stack
+                path_parts = [d[1] for d in dir_stack]
+                path_parts.append(filename)
+                full_path = "/".join(path_parts)
+
+                # Only add if it looks like a real file (has extension or is known file)
+                if "." in filename or filename in ["Makefile", "Dockerfile", "README", "LICENSE"]:
+                    files.append(full_path)
+
+        if files:
+            self.logger.info(f"📁 YAML parser extracted {len(files)} files")
+
+        return files
 
     def _extract_from_tree_structure(self, lines: List[str]) -> List[str]:
         """

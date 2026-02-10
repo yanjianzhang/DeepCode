@@ -86,6 +86,7 @@ from workflows.agents import CodeImplementationAgent
 from workflows.agents.memory_agent_concise import ConciseMemoryAgent
 from config.mcp_tool_definitions import get_mcp_tools
 from utils.llm_utils import get_preferred_llm_class, get_default_models, load_api_config
+from utils.simple_llm_logger import SimpleLLMLogger, get_llm_logger
 
 # Common utilities for tool validation
 try:
@@ -125,6 +126,9 @@ class CodeImplementationWorkflow:
         self.enable_read_tools = (
             True  # Default value, will be overridden by run_workflow parameter
         )
+        # Initialize LLM logger for recording complete LLM responses
+        self.llm_logger = get_llm_logger()
+        self.logger.info("LLM response logger initialized")
 
     def _load_api_config(self) -> Dict[str, Any]:
         """Load API configuration with environment variable override."""
@@ -388,6 +392,28 @@ Requirements:
             code_directory,
         )
 
+        # VALIDATION: Check if plan parser found any files to implement
+        all_files = memory_agent.get_all_files_list()
+        if not all_files:
+            self.logger.error(
+                "❌ ERROR: Plan parser extracted 0 files from the implementation plan!"
+            )
+            self.logger.error(
+                "This indicates the plan format is not recognized by the parser."
+            )
+            self.logger.error(
+                "Please check the file_structure section in initial_plan.txt"
+            )
+            raise ValueError(
+                "Plan parser failed to extract any files from the implementation plan. "
+                "The file_structure section may be in an unsupported format. "
+                "Expected formats: YAML-style nested directories, tree structure with ├──/└──, "
+                "or simple list with file paths."
+            )
+        else:
+            self.logger.info(f"✅ Plan parser found {len(all_files)} files to implement")
+            self.logger.info(f"📄 Sample files: {all_files[:5]}...")
+
         # Log read tools configuration
         read_tools_status = "ENABLED" if self.enable_read_tools else "DISABLED"
         self.logger.info(
@@ -405,6 +431,13 @@ Requirements:
         # Initialize memory agent with iteration 0
         memory_agent.start_new_round(iteration=0)
 
+        # Track validation phase
+        in_validation_phase = False
+        validation_iterations = 0
+        max_validation_iterations = 3  # Keep validation short to avoid loops
+        validation_started_at = None
+        max_validation_seconds = 600  # 10 minutes max validation time
+
         while iteration < max_iterations:
             iteration += 1
             elapsed_time = time.time() - start_time
@@ -412,6 +445,22 @@ Requirements:
             if elapsed_time > max_time:
                 self.logger.warning(f"Time limit reached: {elapsed_time:.2f}s")
                 break
+
+            # Check if validation phase is taking too long
+            if in_validation_phase:
+                validation_iterations += 1
+                if validation_started_at is None:
+                    validation_started_at = time.time()
+                if validation_iterations > max_validation_iterations:
+                    self.logger.info(
+                        f"✅ Validation phase completed after {validation_iterations} iterations"
+                    )
+                    break
+                if time.time() - validation_started_at > max_validation_seconds:
+                    self.logger.info(
+                        "✅ Validation phase completed after reaching time limit"
+                    )
+                    break
 
             # # Test simplified memory approach if we have files implemented
             # if iteration == 5 and code_agent.get_files_implemented_count() > 0:
@@ -505,11 +554,24 @@ Requirements:
 
             # Check completion based on actual unimplemented files list
             unimplemented_files = memory_agent.get_unimplemented_files()
-            if not unimplemented_files:  # Empty list means all files implemented
+            if not unimplemented_files and not in_validation_phase:
+                # First time all files are implemented - enter validation phase
+                in_validation_phase = True
+                validation_started_at = time.time()
                 self.logger.info(
-                    "✅ Code implementation complete - All files implemented"
+                    "✅ All files implemented - Entering validation phase"
                 )
-                break
+                # Don't break - continue to allow LLM to run validation/testing
+                validation_guidance = self._generate_validation_guidance(code_agent.get_files_implemented_count())
+                messages.append({"role": "user", "content": validation_guidance})
+
+            # Check if LLM indicates validation is complete
+            if in_validation_phase and response_content:
+                if "VALIDATION COMPLETE" in response_content.upper() or "ALL TESTS PASSED" in response_content.upper():
+                    self.logger.info(
+                        "✅ Validation completed successfully - LLM confirmed tests passed"
+                    )
+                    break
 
             # Emergency trim if too long
             if len(messages) > 50:
@@ -522,6 +584,31 @@ Requirements:
                 messages = memory_agent.apply_memory_optimization(
                     current_system_message, messages, files_implemented_count
                 )
+
+        # VALIDATION: Check if any code files were actually implemented
+        implemented_files = memory_agent.get_implemented_files()
+        all_files = memory_agent.get_all_files_list()
+        code_extensions = (".py", ".sh", ".c", ".cpp", ".java", ".js", ".ts", ".go", ".rs")
+        code_files_implemented = [f for f in implemented_files if f.endswith(code_extensions)]
+
+        if not code_files_implemented:
+            self.logger.error(
+                "❌ ERROR: No code files were implemented!"
+            )
+            self.logger.error(
+                f"Total files in plan: {len(all_files)}"
+            )
+            self.logger.error(
+                f"Files marked as implemented: {len(implemented_files)}"
+            )
+            self.logger.error(
+                f"Implemented files: {implemented_files}"
+            )
+            # Don't raise here - let the report be generated but log the error clearly
+            self.logger.error(
+                "⚠️ WARNING: Code implementation appears to have failed - "
+                "only documentation files may have been created!"
+            )
 
         return await self._generate_pure_code_final_report_with_concise_agents(
             iteration, time.time() - start_time, code_agent, memory_agent
@@ -832,6 +919,19 @@ Requirements:
                         f"Consider increasing max_tokens."
                     )
 
+        # Log complete LLM response to SimpleLLMLogger
+        if content or tool_calls:
+            log_content = content
+            if tool_calls:
+                tool_calls_str = json.dumps(tool_calls, ensure_ascii=False, indent=2)
+                log_content += f"\n\n[Tool Calls]:\n{tool_calls_str}"
+            self.llm_logger.log_response(
+                content=log_content,
+                model=impl_model,
+                agent="CodeImplementationWorkflow",
+                token_usage=getattr(response, 'usage', None),
+            )
+
         return {"content": content, "tool_calls": tool_calls}
 
     async def _call_google_with_tools(
@@ -966,6 +1066,18 @@ Requirements:
                                     f"Skipping invalid Google tool call: {tool_call.get('name')} - "
                                     f"missing required parameters"
                                 )
+
+        # Log complete LLM response to SimpleLLMLogger
+        if content or tool_calls:
+            log_content = content
+            if tool_calls:
+                tool_calls_str = json.dumps(tool_calls, ensure_ascii=False, indent=2)
+                log_content += f"\n\n[Tool Calls]:\n{tool_calls_str}"
+            self.llm_logger.log_response(
+                content=log_content,
+                model=impl_model,
+                agent="CodeImplementationWorkflow",
+            )
 
         return {"content": content, "tool_calls": tool_calls}
 
@@ -1297,6 +1409,18 @@ Requirements:
                         print("   ⚠️  Skipping unrepairable tool call")
                         continue
 
+        # Log complete LLM response to SimpleLLMLogger
+        if content or tool_calls:
+            log_content = content
+            if tool_calls:
+                tool_calls_str = json.dumps(tool_calls, ensure_ascii=False, indent=2)
+                log_content += f"\n\n[Tool Calls]:\n{tool_calls_str}"
+            self.llm_logger.log_response(
+                content=log_content,
+                model=impl_model,
+                agent="CodeImplementationWorkflow",
+            )
+
         return {"content": content, "tool_calls": tool_calls}
 
     # ==================== 5. Tools and Utility Methods (Utility Layer) ====================
@@ -1405,6 +1529,38 @@ Requirements:
    - **Use `write_file` to implement the new component
 
 🚨 **Critical:** Don't just explain - either declare completion or use tools!"""
+
+    def _generate_validation_guidance(self, files_count: int) -> str:
+        """Generate guidance for validation phase after all files are implemented"""
+        return f"""🎉 **All {files_count} files have been implemented!**
+
+🔍 **MANDATORY VALIDATION PHASE** - You MUST execute tests before completing!
+
+⚠️ **IMPORTANT**: Simply saying "All files implemented" is NOT enough!
+You MUST actually run the code to verify it works.
+
+**REQUIRED ACTION NOW - Use execute_bash tool:**
+
+```
+execute_bash("cd generate_code/project && python3 -c \\"import sys; sys.path.insert(0, '.'); import main; print('Import successful')\\"")
+```
+
+**After import test succeeds, run:**
+```
+execute_bash("cd generate_code/project && python3 main.py --help 2>&1 || python3 main.py 2>&1 | head -50")
+```
+
+**What to do based on results:**
+1. ✅ If tests PASS → Reply exactly: "VALIDATION COMPLETE - All tests passed"
+2. ❌ If tests FAIL → Use `write_file` to fix the errors, then re-run tests
+3. ⚠️ If missing dependencies → Note them but still run what you can
+
+🚨 **YOU MUST USE execute_bash TOOL NOW!**
+Do NOT just reply with text - actually execute the commands above.
+
+The validation phase will not complete until you either:
+- Successfully run tests and reply "VALIDATION COMPLETE"
+- Or reach the maximum validation iterations (which means validation failed)"""
 
     def _compile_user_response(self, tool_results: List[Dict], guidance: str) -> str:
         """Compile tool results and guidance into a single user response"""

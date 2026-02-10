@@ -1332,6 +1332,15 @@ Before considering the task complete, ensure you have:
 - ✅ Basic documentation explaining how to use the implemented system
 - ✅ **CRITICAL: A main.py entry point** at the project root that runs with `python3 main.py`
 - ✅ **CRITICAL: A reproduce.sh script** at the submission root for automated execution
+- ✅ **CRITICAL: VALIDATION** - After implementing all files, you MUST run tests to verify the code works
+
+**MANDATORY VALIDATION PHASE**:
+After implementing all files, you MUST:
+1. Run `python3 -c "import main"` to verify imports work
+2. Run `python3 main.py --help` or similar to test the entry point
+3. Run a basic functionality test
+4. Fix any errors found before declaring completion
+5. Only respond "VALIDATION COMPLETE" after successful tests
 
 **MANDATORY ENTRY POINT REQUIREMENT**:
 You MUST create a main.py file at the project root that:

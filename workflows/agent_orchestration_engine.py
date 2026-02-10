@@ -30,6 +30,7 @@ import asyncio
 import json
 import os
 import re
+import hashlib
 import yaml
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -514,28 +515,50 @@ async def run_resource_processor(analysis_result: str, logger) -> str:
     Returns:
         str: Processing result with paper directory path
     """
-    # Pre-compute paper ID - deterministic, no LLM needed
-    papers_dir = "./deepcode_lab/papers"
-    os.makedirs(papers_dir, exist_ok=True)
-    existing_ids = [
-        int(d)
-        for d in os.listdir(papers_dir)
-        if os.path.isdir(os.path.join(papers_dir, d)) and d.isdigit()
-    ]
-    next_id = max(existing_ids) + 1 if existing_ids else 1
-    paper_dir = os.path.join(papers_dir, str(next_id))
-    os.makedirs(paper_dir, exist_ok=True)
-
-    logger.info(f"📋 Paper ID: {next_id}")
-    logger.info(f"📂 Paper directory: {paper_dir}")
-
-    # Extract file path/URL from analysis_result - simple parsing, no LLM needed
-    # The analysis_result should contain the path/URL identified by the analyzer
+    # Extract file path/URL from analysis_result first to determine paper name
     try:
         # Parse the analysis result to extract path
         analysis_data = json.loads(analysis_result)
         source_path = analysis_data.get("path") or analysis_data.get("input_path")
         input_type = analysis_data.get("input_type", "unknown")
+
+        # Determine paper name from source path
+        # Use the parent directory name of the source file as paper name
+        if source_path:
+            # Extract paper name from path like /path/to/papers/rice/paper.md -> rice
+            path_parts = source_path.replace("\\", "/").split("/")
+            # Look for "papers" in path and use the next directory name
+            paper_name = None
+            for i, part in enumerate(path_parts):
+                if part == "papers" and i + 1 < len(path_parts):
+                    paper_name = path_parts[i + 1]
+                    break
+            # Fallback: use parent directory name
+            if not paper_name:
+                parent_dir = os.path.dirname(source_path)
+                paper_name = os.path.basename(parent_dir)
+            # Sanitize paper name
+            paper_name = paper_name.replace(" ", "_").replace("/", "_")
+            if not paper_name or paper_name in [".", "..", ""]:
+                paper_name = "paper_1"
+        else:
+            paper_name = "paper_1"
+    except (json.JSONDecodeError, KeyError, Exception):
+        paper_name = "paper_1"
+        source_path = None
+        input_type = "unknown"
+
+    # Create paper directory using paper name instead of numeric ID
+    papers_dir = "./deepcode_lab/papers"
+    os.makedirs(papers_dir, exist_ok=True)
+    paper_dir = os.path.join(papers_dir, paper_name)
+    os.makedirs(paper_dir, exist_ok=True)
+
+    logger.info(f"📋 Paper Name: {paper_name}")
+    logger.info(f"📂 Paper directory: {paper_dir}")
+
+    # Continue with file processing
+    try:
 
         logger.info(f"📥 Processing {input_type}: {source_path}")
 
@@ -548,7 +571,7 @@ async def run_resource_processor(analysis_result: str, logger) -> str:
             logger.info(f"📄 Direct file copy: {source_path} -> {paper_dir}")
             try:
                 operation_result = await move_file_to(
-                    source=source_path, destination=paper_dir, filename=f"{next_id}.pdf"
+                    source=source_path, destination=paper_dir, filename=f"{paper_name}.pdf"
                 )
                 # Check if operation succeeded
                 if (
@@ -569,7 +592,7 @@ async def run_resource_processor(analysis_result: str, logger) -> str:
                 operation_result = await download_file_to(
                     url=source_path,
                     destination=paper_dir,
-                    filename=f"{next_id}.pdf",  # Default to PDF, conversion will handle it
+                    filename=f"{paper_name}.pdf",  # Default to PDF, conversion will handle it
                 )
                 # Check if operation succeeded
                 if (
@@ -585,11 +608,11 @@ async def run_resource_processor(analysis_result: str, logger) -> str:
 
         # 3. If direct call succeeded, format result
         if direct_call_success:
-            dest_path = os.path.join(paper_dir, f"{next_id}.md")
+            dest_path = os.path.join(paper_dir, f"{paper_name}.md")
             result = json.dumps(
                 {
                     "status": "success",
-                    "paper_id": next_id,
+                    "paper_id": paper_name,
                     "paper_dir": paper_dir,
                     "paper_path": dest_path,  # Use paper_path for compatibility with FileProcessor
                     "file_path": dest_path,   # Keep file_path for backwards compatibility
@@ -627,8 +650,8 @@ async def run_resource_processor(analysis_result: str, logger) -> str:
                 message = f"""Download/move the file to paper directory: {paper_dir}
 Source: {source_path}
 Input Type: {input_type}
-Paper ID: {next_id}
-Target filename: {next_id}.md (after conversion){context}
+Paper Name: {paper_name}
+Target filename: {paper_name}.md (after conversion){context}
 
 Use the appropriate tool to complete this task."""
 
@@ -644,7 +667,7 @@ Use the appropriate tool to complete this task."""
         return json.dumps(
             {
                 "status": "partial",
-                "paper_id": next_id,
+                "paper_id": paper_name,
                 "paper_dir": paper_dir,
                 "message": f"Paper directory created at {paper_dir}, manual file placement may be needed",
             }
@@ -831,26 +854,65 @@ Complete all three tasks in sequence and provide a comprehensive analysis."""
 {paper_content}
 === PAPER CONTENT END ===
 
-Based on this paper, generate a comprehensive code reproduction plan that includes:
+Based on this paper, generate a comprehensive code reproduction plan in **YAML format**.
 
-1. Complete system architecture and component breakdown
-2. All algorithms, formulas, and implementation details
-3. Detailed file structure and implementation roadmap
+**IMPORTANT**: Your output MUST be a valid YAML document containing ALL of the following 5 required sections:
+
+```yaml
+file_structure:
+  # Complete project file/directory structure with all files needed
+  # Use tree-like format showing directories and files
+
+implementation_components:
+  # List of all major components/modules to implement
+  # Include algorithms, data structures, key classes
+
+validation_approach:
+  # How to validate the implementation is correct
+  # Include test strategies, evaluation metrics, expected outputs
+
+environment_setup:
+  # Dependencies, libraries, Python version, etc.
+  # Include requirements.txt content and setup instructions
+
+implementation_strategy:
+  # Step-by-step implementation order
+  # Which components to build first, dependencies between modules
+```
 
 You may use web search (brave_web_search) if you need clarification on algorithms, methods, or concepts.
 
-The goal is to create a reproduction plan detailed enough for independent implementation."""
+The goal is to create a YAML reproduction plan detailed enough for independent implementation.
+Do NOT output free-form text analysis - output ONLY the YAML document with all 5 sections."""
     else:
         # Fallback: paper not found, agents will need to find it
         message = f"""Analyze the research paper in directory: {paper_dir}
 
-Please locate and analyze the markdown (.md) file containing the research paper. Based on your analysis, generate a comprehensive code reproduction plan that includes:
+Please locate and analyze the markdown (.md) file containing the research paper.
 
-1. Complete system architecture and component breakdown
-2. All algorithms, formulas, and implementation details
-3. Detailed file structure and implementation roadmap
+Based on your analysis, generate a comprehensive code reproduction plan in **YAML format**.
 
-The goal is to create a reproduction plan detailed enough for independent implementation."""
+**IMPORTANT**: Your output MUST be a valid YAML document containing ALL of the following 5 required sections:
+
+```yaml
+file_structure:
+  # Complete project file/directory structure with all files needed
+
+implementation_components:
+  # List of all major components/modules to implement
+
+validation_approach:
+  # How to validate the implementation is correct
+
+environment_setup:
+  # Dependencies, libraries, setup instructions
+
+implementation_strategy:
+  # Step-by-step implementation order
+```
+
+The goal is to create a YAML reproduction plan detailed enough for independent implementation.
+Do NOT output free-form text analysis - output ONLY the YAML document with all 5 sections."""
 
     max_retries = 3
     retry_count = 0
@@ -1008,6 +1070,62 @@ async def _process_input_source(input_source: str, logger) -> str:
     return input_source
 
 
+def _compute_file_hash(file_path: str) -> str:
+    """Compute a stable hash for a file path based on content."""
+    sha256 = hashlib.sha256()
+    with open(file_path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            sha256.update(chunk)
+    return sha256.hexdigest()
+
+
+def _resolve_paper_dir(input_source: str, workspace_dir: str) -> str | None:
+    """Resolve the paper directory the pipeline would use."""
+    paper_dir = None
+    try:
+        paper_dir = FileProcessor.extract_file_path(input_source)
+    except Exception:
+        return None
+    if not paper_dir:
+        return None
+    if paper_dir.endswith(("deepcode_lab", "agent_folders")):
+        return workspace_dir
+    paper_name = os.path.basename(paper_dir)
+    return os.path.join(workspace_dir, "papers", paper_name)
+
+
+def _cache_manifest_path(paper_dir: str) -> str:
+    return os.path.join(paper_dir, "cache_manifest.json")
+
+
+def _is_cache_complete(paper_dir: str, expected_hash: str) -> bool:
+    manifest_path = _cache_manifest_path(paper_dir)
+    if not os.path.exists(manifest_path):
+        return False
+    try:
+        with open(manifest_path, "r", encoding="utf-8") as f:
+            manifest = json.load(f)
+    except Exception:
+        return False
+    if manifest.get("content_hash") != expected_hash:
+        return False
+    required_files = manifest.get("required_files", [])
+    for rel_path in required_files:
+        if not os.path.exists(os.path.join(paper_dir, rel_path)):
+            return False
+    return True
+
+
+def _write_cache_manifest(paper_dir: str, content_hash: str, required_files: list[str]) -> None:
+    manifest_path = _cache_manifest_path(paper_dir)
+    data = {
+        "content_hash": content_hash,
+        "required_files": required_files,
+    }
+    with open(manifest_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+
+
 async def orchestrate_research_analysis_agent(
     input_source: str, logger, progress_callback: Optional[Callable] = None
 ) -> Tuple[str, str]:
@@ -1090,6 +1208,13 @@ async def synthesize_workspace_infrastructure_agent(
     print(f"   Base workspace environment: {workspace_dir or 'auto-detected'}")
     print(f"   Research workspace: {paper_dir}")
     print("   AI-driven path optimization: active")
+
+    standardized_text_path = os.path.join(paper_dir, "standardized_text.txt")
+    try:
+        with open(standardized_text_path, "w", encoding="utf-8") as f:
+            f.write(result["standardized_text"])
+    except Exception as e:
+        print(f"⚠️ Failed to write standardized_text cache: {e}")
 
     return {
         "paper_dir": paper_dir,
@@ -1184,6 +1309,22 @@ async def orchestrate_document_preprocessing_agent(
                 "paper_dir": dir_info["paper_dir"],
                 "segments_ready": False,
                 "use_segmentation": False,
+            }
+
+        # Cache short-circuit: if segments already exist, skip regeneration
+        cached_segments_dir = os.path.join(dir_info["paper_dir"], "document_segments")
+        cached_index = os.path.join(cached_segments_dir, "document_index.json")
+        if os.path.exists(cached_index):
+            print("✅ Found cached document segments, skipping segmentation.")
+            dir_info["segments_dir"] = cached_segments_dir
+            dir_info["segments_ready"] = True
+            dir_info["use_segmentation"] = True
+            return {
+                "status": "cached",
+                "paper_dir": dir_info["paper_dir"],
+                "segments_dir": cached_segments_dir,
+                "segments_ready": True,
+                "use_segmentation": True,
             }
 
         # Step 2: Read document content to determine size
@@ -1719,6 +1860,7 @@ async def execute_multi_agent_research_pipeline(
     logger,
     progress_callback: Optional[Callable] = None,
     enable_indexing: bool = True,
+    workspace_dir: Optional[str] = None,
 ) -> str:
     """
     Execute the complete intelligent multi-agent research orchestration pipeline.
@@ -1748,7 +1890,10 @@ async def execute_multi_agent_research_pipeline(
         print("🚀 Initializing intelligent multi-agent research orchestration system")
 
         # Setup local workspace directory
-        workspace_dir = os.path.join(os.getcwd(), "deepcode_lab")
+        if workspace_dir:
+            workspace_dir = os.path.abspath(workspace_dir)
+        else:
+            workspace_dir = os.path.join(os.getcwd(), "deepcode_lab")
         os.makedirs(workspace_dir, exist_ok=True)
 
         print("📁 Working environment: local")
@@ -1764,8 +1909,23 @@ async def execute_multi_agent_research_pipeline(
         # Phase 1: Input Processing and Validation
         input_source = await _process_input_source(input_source, logger)
 
+        cache_hash = None
+        cache_paper_dir = None
+        cache_hit = False
+        if isinstance(input_source, str) and os.path.isfile(input_source):
+            try:
+                cache_hash = _compute_file_hash(input_source)
+                cache_paper_dir = _resolve_paper_dir(input_source, workspace_dir)
+                if cache_paper_dir and _is_cache_complete(cache_paper_dir, cache_hash):
+                    cache_hit = True
+                    print(f"✅ Cache hit for document: {cache_paper_dir}")
+            except Exception as e:
+                print(f"⚠️ Cache check failed: {e}")
+
         # Phase 2: Research Analysis and Resource Processing (if needed)
-        if isinstance(input_source, str) and (
+        if cache_hit:
+            download_result = json.dumps({"paper_path": input_source})
+        elif isinstance(input_source, str) and (
             input_source.endswith((".pdf", ".docx", ".txt", ".html", ".md"))
             or input_source.startswith(("http", "file://"))
         ):
@@ -1817,6 +1977,14 @@ async def execute_multi_agent_research_pipeline(
 
         # Phase 4: Code Planning Orchestration
         await orchestrate_code_planning_agent(dir_info, logger, progress_callback)
+
+        # Update cache manifest once core artifacts exist
+        if cache_hash and dir_info.get("paper_dir"):
+            required_files = ["initial_plan.txt", "standardized_text.txt"]
+            segments_index = os.path.join("document_segments", "document_index.json")
+            if os.path.exists(os.path.join(dir_info["paper_dir"], segments_index)):
+                required_files.append(segments_index)
+            _write_cache_manifest(dir_info["paper_dir"], cache_hash, required_files)
 
         # Phase 5: Reference Intelligence (only when indexing is enabled)
         if enable_indexing:

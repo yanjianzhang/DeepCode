@@ -10,7 +10,7 @@ import os
 import yaml
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, List, Tuple, Union
 
 
 class SimpleLLMLogger:
@@ -135,11 +135,28 @@ class SimpleLLMLogger:
                 "agent": agent,
             }
             # 添加额外信息
-            if "token_usage" in extra:
-                entry["tokens"] = extra["token_usage"]
+            if "token_usage" in extra and extra["token_usage"] is not None:
+                # Handle Anthropic Usage object or dict with recursive serialization
+                entry["tokens"] = self._serialize_object(extra["token_usage"])
             if "session_id" in extra:
                 entry["session"] = extra["session_id"]
             return entry
+
+    def _serialize_object(self, obj) -> Any:
+        """Recursively serialize object to JSON-compatible format."""
+        if obj is None:
+            return None
+        if isinstance(obj, (str, int, float, bool)):
+            return obj
+        if isinstance(obj, (list, tuple)):
+            return [self._serialize_object(item) for item in obj]
+        if isinstance(obj, dict):
+            return {k: self._serialize_object(v) for k, v in obj.items()}
+        if hasattr(obj, '__dict__'):
+            # Convert object to dict, recursively serialize nested objects
+            return {k: self._serialize_object(v) for k, v in obj.__dict__.items() if not k.startswith('_')}
+        # Fallback: convert to string
+        return str(obj)
 
     def _write_log(self, entry: Dict):
         """写入日志文件"""
