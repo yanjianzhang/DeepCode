@@ -87,6 +87,7 @@ from workflows.agents.memory_agent_concise import ConciseMemoryAgent
 from config.mcp_tool_definitions import get_mcp_tools
 from utils.llm_utils import get_preferred_llm_class, get_default_models, load_api_config
 from utils.simple_llm_logger import SimpleLLMLogger, get_llm_logger
+from utils.trajectory_logger import TrajectoryLogger
 
 # Common utilities for tool validation
 try:
@@ -129,6 +130,8 @@ class CodeImplementationWorkflow:
         # Initialize LLM logger for recording complete LLM responses
         self.llm_logger = get_llm_logger()
         self.logger.info("LLM response logger initialized")
+        # Trajectory logger is initialized lazily per-run in run_workflow
+        self.trajectory_logger: Optional[TrajectoryLogger] = None
 
     def _load_api_config(self) -> Dict[str, Any]:
         """Load API configuration with environment variable override."""
@@ -181,6 +184,11 @@ class CodeImplementationWorkflow:
 
             # Calculate code directory for workspace alignment
             code_directory = os.path.join(target_directory, "generate_code")
+
+            # Initialize trajectory logger for RL data collection
+            traj_dir = os.path.join(target_directory, "logs")
+            self.trajectory_logger = TrajectoryLogger(output_dir=traj_dir)
+            self.logger.info(f"Trajectory logger -> {self.trajectory_logger.log_path}")
 
             self.logger.info("=" * 80)
             self.logger.info("🚀 STARTING CODE IMPLEMENTATION WORKFLOW")
@@ -473,7 +481,8 @@ Requirements:
             messages = self._validate_messages(messages)
             current_system_message = code_agent.get_system_prompt()
 
-            # Round logging removed
+            # Snapshot messages before LLM call for trajectory logging
+            msgs_before_snapshot = [dict(m) for m in messages]
 
             # Call LLM
             response = await self._call_llm_with_tools(
@@ -486,8 +495,17 @@ Requirements:
 
             messages.append({"role": "assistant", "content": response_content})
 
+            # Per-turn tracking for trajectory logger
+            turn_tool_calls: List[Dict] = []
+            turn_tool_results: List[Dict] = []
+            turn_files_written: List[str] = []
+            turn_files_executed: List[str] = []
+            turn_compiled_response: Optional[str] = None
+
             # Handle tool calls
             if response.get("tool_calls"):
+                turn_tool_calls = response["tool_calls"]
+
                 tool_results = await code_agent.execute_tool_calls(
                     response["tool_calls"]
                 )
@@ -499,8 +517,18 @@ Requirements:
                         tool_input=tool_call["input"],
                         tool_result=tool_result.get("result"),
                     )
+                    # Track files written / executed for reward mapping
+                    tc_name = tool_call.get("name", "")
+                    if tc_name == "write_file":
+                        fp = tool_call.get("input", {}).get("file_path", "")
+                        if fp:
+                            turn_files_written.append(fp)
+                    elif tc_name in ("execute_bash", "execute_python"):
+                        cmd = tool_call.get("input", {}).get("command", "") or tool_call.get("input", {}).get("code", "")
+                        if cmd:
+                            turn_files_executed.append(cmd[:200])
 
-                # NEW LOGIC: Check if write_file was called and trigger memory optimization immediately
+                turn_tool_results = tool_results
 
                 # Determine guidance based on results
                 has_error = self._check_tool_results_for_errors(tool_results)
@@ -512,27 +540,42 @@ Requirements:
                     guidance = self._generate_success_guidance(files_count)
 
                 compiled_response = self._compile_user_response(tool_results, guidance)
+                turn_compiled_response = compiled_response
                 messages.append({"role": "user", "content": compiled_response})
 
-                # NEW LOGIC: Apply memory optimization immediately after write_file detection
+                # Apply memory optimization immediately after write_file detection
                 if memory_agent.should_trigger_memory_optimization(
                     messages, code_agent.get_files_implemented_count()
                 ):
-                    # Memory optimization triggered
-
-                    # Apply concise memory optimization
                     files_implemented_count = code_agent.get_files_implemented_count()
                     current_system_message = code_agent.get_system_prompt()
                     messages = memory_agent.apply_memory_optimization(
                         current_system_message, messages, files_implemented_count
                     )
 
-                    # Memory optimization completed
-
             else:
                 files_count = code_agent.get_files_implemented_count()
                 no_tools_guidance = self._generate_no_tools_guidance(files_count)
+                turn_compiled_response = no_tools_guidance
                 messages.append({"role": "user", "content": no_tools_guidance})
+
+            # --- Trajectory logging ---
+            if self.trajectory_logger is not None:
+                try:
+                    self.trajectory_logger.log_turn(
+                        system_prompt=current_system_message,
+                        messages_before=msgs_before_snapshot,
+                        assistant_response={"content": response_content, "tool_calls": turn_tool_calls},
+                        tool_calls=turn_tool_calls,
+                        tool_results=turn_tool_results,
+                        compiled_user_response=turn_compiled_response,
+                        token_usage=response.get("token_usage"),
+                        files_written=turn_files_written,
+                        files_executed=turn_files_executed,
+                        phase="validation" if in_validation_phase else "implementation",
+                    )
+                except Exception as traj_exc:
+                    self.logger.warning(f"Trajectory logging failed: {traj_exc}")
 
             # # Check for analysis loop and provide corrective guidance
             # if code_agent.is_in_analysis_loop():
@@ -609,6 +652,19 @@ Requirements:
                 "⚠️ WARNING: Code implementation appears to have failed - "
                 "only documentation files may have been created!"
             )
+
+        # Finalize trajectory log
+        if self.trajectory_logger is not None:
+            try:
+                self.trajectory_logger.finalize({
+                    "iterations": iteration,
+                    "implemented_files": list(implemented_files),
+                    "all_planned_files": list(all_files),
+                    "code_files_count": len(code_files_implemented),
+                })
+                self.logger.info(f"Trajectory saved to {self.trajectory_logger.log_path}")
+            except Exception as traj_exc:
+                self.logger.warning(f"Trajectory finalize failed: {traj_exc}")
 
         return await self._generate_pure_code_final_report_with_concise_agents(
             iteration, time.time() - start_time, code_agent, memory_agent

@@ -384,6 +384,7 @@ class ConciseMemoryAgent:
         """
         files = []
         in_file_structure = False
+        file_structure_indent = None  # Track the indent level of file_structure key
 
         # Stack to track current directory path: [(indent_level, dir_name), ...]
         dir_stack = []
@@ -393,14 +394,33 @@ class ConciseMemoryAgent:
             if "file_structure:" in line or "file_structure |" in line:
                 in_file_structure = True
                 dir_stack = []
+                # Record the indentation of file_structure key
+                file_structure_indent = len(line) - len(line.lstrip())
                 continue
 
-            # Detect end of file_structure section (new top-level YAML key)
-            if in_file_structure and line.strip() and not line.startswith(" ") and not line.startswith("\t"):
-                if ":" in line and not line.strip().startswith("-") and not line.strip().startswith("#"):
-                    # Check if it's a new section (not a continuation)
-                    if not line.strip().endswith("/:") and not line.strip().endswith("/"):
-                        break
+            # Detect end of file_structure section
+            if in_file_structure and line.strip():
+                stripped = line.strip()
+                current_indent = len(line) - len(line.lstrip())
+
+                # End condition 1: new top-level YAML key (no indentation)
+                if not line.startswith(" ") and not line.startswith("\t"):
+                    if ":" in line and not stripped.startswith("-") and not stripped.startswith("#"):
+                        if not stripped.endswith("/:") and not stripped.endswith("/"):
+                            break
+
+                # End condition 2: new YAML key at same or lower indent as file_structure
+                # This handles nested YAML like:
+                #   file_structure: |
+                #     ...
+                #   implementation_components: |
+                if file_structure_indent is not None and current_indent <= file_structure_indent:
+                    if ":" in stripped and not stripped.startswith("-") and not stripped.startswith("#"):
+                        # Check if it looks like a YAML key (word followed by colon, not a file path)
+                        key_part = stripped.split(":")[0].strip()
+                        # Skip if it looks like a directory (contains / or ends with /)
+                        if "/" not in key_part and not any(c in line for c in ["├", "└", "│", "─"]):
+                            break
 
             if not in_file_structure:
                 continue
@@ -494,6 +514,7 @@ class ConciseMemoryAgent:
         """
         files = []
         in_file_structure = False
+        file_structure_indent = None  # Track indent level of file_structure key
 
         # Enhanced path tracking: store (depth, name) pairs
         path_stack = []  # [(depth, dir_name), ...]
@@ -506,16 +527,26 @@ class ConciseMemoryAgent:
             # === Section Boundary Detection ===
             if "file_structure:" in line or "file_structure |" in line:
                 in_file_structure = True
+                file_structure_indent = len(line) - len(line.lstrip())
                 continue
 
-            # End of file_structure section (next YAML key without indentation)
-            if (
-                in_file_structure
-                and line.strip()
-                and not line.startswith(" ")
-                and ":" in line
-            ):
-                break
+            # End of file_structure section
+            if in_file_structure and line.strip():
+                stripped = line.strip()
+                current_indent = len(line) - len(line.lstrip())
+
+                # End condition 1: next YAML key without indentation
+                if not line.startswith(" ") and ":" in line:
+                    break
+
+                # End condition 2: new YAML key at same or lower indent as file_structure
+                # This handles nested YAML where sections are indented
+                if file_structure_indent is not None and current_indent <= file_structure_indent:
+                    if ":" in stripped and not stripped.startswith("-") and not stripped.startswith("#"):
+                        key_part = stripped.split(":")[0].strip()
+                        # Skip if it looks like a directory path or tree structure
+                        if "/" not in key_part and not any(c in line for c in ["├", "└", "│", "─"]):
+                            break
 
             if not in_file_structure:
                 continue
